@@ -1,87 +1,7 @@
+#include "shader.hpp"
 #include "sort_ctx.hpp"
 #include <GLES3/gl32.h>
 #include <SDL.h>
-
-const char *const vertexShaderSource = R"(
-    #version 320 es
-
-    layout (location = 0) in int aValue;
-
-    uniform int _Size;
-
-    out int index;
-
-    void main() {
-        float x = float(gl_VertexID) / float(_Size) * 2.0 - 1.0;
-        float y = float(aValue + 1) / float(_Size) * 2.0 - 1.0;
-        float size = 1.0 / float(_Size);
-        gl_Position = vec4(x, y, 0, 1);
-        index = gl_VertexID;
-    }
-)";
-const char *const geometryShaderSource = R"(
-    #version 320 es
-
-    layout(points) in;
-
-    in int index[];
-
-    uniform int _Size;
-
-    flat out int Index;
-
-    layout(triangle_strip, max_vertices = 4) out;
-
-    void main() {
-        vec4 pos = gl_in[gl_PrimitiveIDIn].gl_Position;
-        vec2 size = vec2(2.0 / float(_Size), -1.0 - pos.y);
-
-        gl_Position = pos;
-        Index = index[gl_PrimitiveIDIn];
-        EmitVertex();
-
-        gl_Position = pos + vec4(size * vec2(1, 0), 0, 0);
-        Index = index[gl_PrimitiveIDIn];
-        EmitVertex();
-
-        gl_Position = pos + vec4(size * vec2(0, 1), 0, 0);
-        Index = index[gl_PrimitiveIDIn];
-        EmitVertex();
-
-        gl_Position = pos + vec4(size, 0, 0);
-        Index = index[gl_PrimitiveIDIn];
-        EmitVertex();
-
-        EndPrimitive();
-    }
-)";
-const char *const fragmentShaderSource = R"(
-    #version 320 es
-
-    #ifdef GL_ES
-    precision highp float;
-    #endif
-
-    flat in int Index;
-
-    uniform int _Behavior;
-    uniform int _Arg0;
-    uniform int _Arg1;
-
-    out vec4 outColor;
-
-    void main() {
-        if(_Behavior == 1 && (Index == _Arg0 || Index == _Arg1)) {
-            outColor = vec4(0, 0, 1, 1);
-        } else if(_Behavior == 2 && (Index == _Arg0 || Index == _Arg1)) {
-            outColor = vec4(1, 0, 0, 1);
-        } else if(_Behavior == 3 && Index == _Arg0) {
-            outColor = vec4(0, 1, 0, 1);
-        } else {
-            outColor = vec4(1);
-        }
-    }
-)";
 
 int main(int argc, char *argv[]) {
   SDL_Init(SDL_INIT_VIDEO);
@@ -89,12 +9,13 @@ int main(int argc, char *argv[]) {
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
   SDL_SetHint(SDL_HINT_OPENGL_ES_DRIVER, "1");
 
-  SDL_Window *window =
-      SDL_CreateWindow("SortVis", SDL_WINDOWPOS_CENTERED,
-                       SDL_WINDOWPOS_CENTERED, 1280, 720, SDL_WINDOW_OPENGL);
+  SDL_Window *window = SDL_CreateWindow(
+      "SortVis", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 800, 800,
+      SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
 
   SDL_GLContext gl = SDL_GL_CreateContext(window);
 
@@ -102,39 +23,24 @@ int main(int argc, char *argv[]) {
 
   sv::SortContext sortCtx;
 
-  GLuint abo = 0;
-  glGenBuffers(1, &abo);
-  glBindBuffer(GL_ARRAY_BUFFER, abo);
+  GLuint vbo = 0;
+  glGenBuffers(1, &vbo);
+  glBindBuffer(GL_ARRAY_BUFFER, vbo);
   glBufferData(GL_ARRAY_BUFFER, sortCtx.GetArray().size_bytes(), nullptr,
                GL_DYNAMIC_DRAW);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-  int success;
-  GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
-  glShaderSource(vertexShader, 1, &vertexShaderSource, nullptr);
-  glCompileShader(vertexShader);
-  GLuint geometryShader = glCreateShader(GL_GEOMETRY_SHADER);
-  glShaderSource(geometryShader, 1, &geometryShaderSource, nullptr);
-  glCompileShader(geometryShader);
-  GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-  glShaderSource(fragmentShader, 1, &fragmentShaderSource, nullptr);
-  glCompileShader(fragmentShader);
-  GLuint program = glCreateProgram();
-  glAttachShader(program, vertexShader);
-  glAttachShader(program, geometryShader);
-  glAttachShader(program, fragmentShader);
-  glLinkProgram(program);
-  glDetachShader(program, vertexShader);
-  glDetachShader(program, geometryShader);
-  glDetachShader(program, fragmentShader);
-  glDeleteShader(vertexShader);
-  glDeleteShader(geometryShader);
-  glDeleteShader(fragmentShader);
+  GLuint shaders[] = {
+      sv::MakeShader(sv::hist_vert, sv::hist_geom, sv::hist_frag),
+      sv::MakeShader(sv::pie_vert, sv::pie_geom, sv::pie_frag),
+      sv::MakeShader(sv::dot_vert, sv::dot_geom, sv::dot_frag),
+  };
 
   sv::SortEvent sEvent{sv::SortBehavior::None, 0, 0};
 
   bool autorun = false;
   int speed = 1;
+  int displayMode = 0;
 
   while (1) {
     SDL_Event event;
@@ -151,38 +57,92 @@ int main(int argc, char *argv[]) {
         case SDLK_SPACE:
           autorun = !autorun;
           break;
+        case SDLK_TAB:
+          displayMode =
+              (displayMode + 1) % (sizeof(shaders) / sizeof(*shaders));
+          break;
         case SDLK_1:
-          speed = 1;
+          if (event.key.keysym.mod & KMOD_SHIFT) {
+            sortCtx.SetSize(32);
+            goto resizebuffer;
+          } else {
+            speed = 1;
+          }
           break;
         case SDLK_2:
-          speed = 4;
+          if (event.key.keysym.mod & KMOD_SHIFT) {
+            sortCtx.SetSize(64);
+            goto resizebuffer;
+          } else {
+            speed = 2;
+          }
           break;
         case SDLK_3:
-          speed = 8;
+          if (event.key.keysym.mod & KMOD_SHIFT) {
+            sortCtx.SetSize(128);
+            goto resizebuffer;
+          } else {
+            speed = 4;
+          }
           break;
         case SDLK_4:
-          speed = 16;
+          if (event.key.keysym.mod & KMOD_SHIFT) {
+            sortCtx.SetSize(256);
+            goto resizebuffer;
+          } else {
+            speed = 8;
+          }
           break;
         case SDLK_5:
-          sortCtx.SetSize(64);
-          goto resizebuffer;
+          if (event.key.keysym.mod & KMOD_SHIFT) {
+            sortCtx.SetSize(512);
+            goto resizebuffer;
+          } else {
+            speed = 16;
+          }
+          break;
         case SDLK_6:
-          sortCtx.SetSize(128);
-          goto resizebuffer;
+          if (event.key.keysym.mod & KMOD_SHIFT) {
+            sortCtx.SetSize(1024);
+            goto resizebuffer;
+          } else {
+            speed = 32;
+          }
+          break;
         case SDLK_7:
-          sortCtx.SetSize(256);
-          goto resizebuffer;
+          if (event.key.keysym.mod & KMOD_SHIFT) {
+            sortCtx.SetSize(2048);
+            goto resizebuffer;
+          } else {
+            speed = 64;
+          }
+          break;
         case SDLK_8:
-          sortCtx.SetSize(512);
-          goto resizebuffer;
+          if (event.key.keysym.mod & KMOD_SHIFT) {
+            sortCtx.SetSize(4096);
+            goto resizebuffer;
+          } else {
+            speed = 128;
+          }
+          break;
         case SDLK_9:
-          sortCtx.SetSize(1024);
-          goto resizebuffer;
+          if (event.key.keysym.mod & KMOD_SHIFT) {
+            sortCtx.SetSize(8192);
+            goto resizebuffer;
+          } else {
+            speed = 256;
+          }
+          break;
         case SDLK_0:
-          sortCtx.SetSize(2048);
-          goto resizebuffer;
+          if (event.key.keysym.mod & KMOD_SHIFT) {
+            sortCtx.SetSize(16384);
+            goto resizebuffer;
+          } else {
+            speed = 512;
+          }
+          break;
         resizebuffer:
-          glBindBuffer(GL_ARRAY_BUFFER, abo);
+          glBindBuffer(GL_ARRAY_BUFFER, vbo);
           glBufferData(GL_ARRAY_BUFFER, sortCtx.GetArray().size_bytes(),
                        nullptr, GL_DYNAMIC_DRAW);
           glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -223,12 +183,13 @@ int main(int argc, char *argv[]) {
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    glBindBuffer(GL_ARRAY_BUFFER, abo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0, sortCtx.GetArray().size_bytes(),
                     sortCtx.GetArray().data());
     glEnableVertexAttribArray(0);
     glVertexAttribIPointer(0, 1, GL_INT, sizeof(int), 0);
 
+    GLuint program = shaders[displayMode];
     glUseProgram(program);
     glUniform1i(glGetUniformLocation(program, "_Size"),
                 sortCtx.GetArray().size());
@@ -244,8 +205,10 @@ int main(int argc, char *argv[]) {
   }
 
 quit:
-  glDeleteBuffers(1, &abo);
-  glDeleteProgram(program);
+  glDeleteBuffers(1, &vbo);
+  for (GLuint shader : shaders) {
+    glDeleteProgram(shader);
+  }
 
   SDL_GL_DeleteContext(gl);
   SDL_DestroyWindow(window);
