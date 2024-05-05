@@ -22,6 +22,9 @@ SHADER_EMBED(dot_vert, "dot_vert.glsl")
 SHADER_EMBED(dot_geom, "dot_geom.glsl")
 SHADER_EMBED(dot_frag, "dot_frag.glsl")
 
+SHADER_EMBED(line_vert, "line_vert.glsl")
+SHADER_EMBED(line_frag, "line_frag.glsl")
+
 GLuint sv::MakeShader(const char *vert, const char *geom, const char *frag) {
   GLuint vertex = 0;
   GLuint geometry = 0;
